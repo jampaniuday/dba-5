@@ -1,0 +1,17 @@
+Enter password: 
+      ,round( seg.bytes/1024/1024,2) "Tamanho ocupado"
+                           *
+ERROR at line 8:
+ORA-01089: immediate shutdown in progress - no operations are permitted
+ORA-06512: at "SYS.DBMS_SPACE_ADMIN", line 171
+
+
+Error accessing package DBMS_APPLICATION_INFO
+ERROR:
+ORA-01089: immediate shutdown in progress - no operations are permitted
+
+
+ERROR:
+ORA-01089: immediate shutdown in progress - no operations are permitted
+
+

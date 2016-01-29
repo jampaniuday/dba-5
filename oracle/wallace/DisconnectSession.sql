@@ -1,0 +1,2 @@
+/*--matar sessao no banco*/
+ALTER SYSTEM DISCONNECT SESSION '&SID,&SERIAL' IMMEDIATE;

@@ -1,0 +1,147 @@
+#!/bin/ksh
+sqlplus -s /nolog  << EOF
+conn system/B2yOH4tg@PEDA1I
+set feed on head on lines 300 pages 50
+cl scr
+prompt REQUESTS_RUNNING
+Select Concurrent_Queue_Name Manager,
+       Request_Id Request, parent_request_id parent, substr(fcr.oracle_process_id,1,10) SPID, substr(fu.user_name,1,20) usuario,
+       substr(Concurrent_Program_Name,1,25) Program,
+       To_Char(Actual_Start_Date, 'DD- MON-YY HH24:MI') Started
+  from apps.Fnd_Concurrent_Queues Fcq, apps.Fnd_Concurrent_Requests Fcr,
+       apps.Fnd_Concurrent_Programs Fcp, apps.Fnd_User Fu, apps.Fnd_Concurrent_Processes Fpro
+ where
+       Phase_Code = 'R' And
+       Fcr.Controlling_Manager = Concurrent_Process_Id       And
+      (Fcq.Concurrent_Queue_Id = Fpro.Concurrent_Queue_Id    And
+       Fcq.Application_Id      = Fpro.Queue_Application_Id ) And
+       (Fcr.Concurrent_Program_Id = Fcp.Concurrent_Program_Id And
+       Fcr.Program_Application_Id = Fcp.Application_Id )     And
+       Fcr.Requested_By = User_Id
+order by actual_start_date desc;
+set feed off
+select substr(fcq.USER_CONCURRENT_QUEUE_NAME,1,50) queue_name,
+count(*) PENDING_REQUESTS
+FROM    apps.fnd_concurrent_worker_requests fcw,
+apps.fnd_concurrent_queues_vl fcq
+WHERE      fcq.concurrent_queue_id = fcw.concurrent_queue_id
+AND      fcw.phase_code = 'P'
+AND      fcw.hold_flag != 'Y'
+AND      fcw.max_processes > 0
+AND      fcw.requested_start_date <= SYSDATE
+GROUP BY substr(fcq.USER_CONCURRENT_QUEUE_NAME,1,50)
+order by 2;
+select count(*) SCHEDULED_REQUESTS
+from apps.fnd_concurrent_requests
+where phase_code = 'P'
+and status_code in ('I','F','Q')
+and requested_start_date > sysdate;
+prompt
+prompt DUPLICATED REQUESTS (RESCHEDULING THEMSELVES TWICE)
+set feed on
+select distinct a.request_id request_A, a.parent_request_id parent_A, to_char(a.actual_start_date,'DD/MM/YYYY HH24:MI:SS') start_A,
+b.request_id request_B, b.parent_request_id parent_B, to_char(b.actual_start_date,'DD/MM/YYYY HH24:MI:SS') start_B
+from apps.fnd_concurrent_requests a, apps.fnd_concurrent_requests b
+where a.concurrent_program_id = b.concurrent_program_id
+and a.argument_text = b.argument_text
+and a.requested_by = b.requested_by
+and a.responsibility_id = b.responsibility_id
+and a.responsibility_application_id = b.responsibility_application_id
+and a.program_application_id = b.program_application_id
+and a.request_id != b.request_id
+and a.parent_request_id = b.parent_request_id
+and a.parent_request_id != '-1'
+and b.parent_request_id != '-1'
+and a.resubmit_interval is not null
+and b.resubmit_interval is not null
+order by to_char(a.actual_start_date,'DD/MM/YYYY HH24:MI:SS');
+set feed off
+select count(sid) INACTIVE_FORMS_SESSIONS
+, substr(machine,1,30) machine
+from v\$session
+where lower(module) like '%frm%'
+and program like 'frmweb%'
+and status = 'INACTIVE'
+group by machine
+order by 1;
+select count(sid) ACTIVE_FORMS_SESSIONS, substr(machine,1,30) machine from v\$session where lower(module) like '%frm%' and program like 'frm                            web%' and status = 'ACTIVE' group by machine order by 1;
+select count(*) ACTIVE_JDBC_CONNECTIONS, substr(machine,1,30) machine from v\$session where program like '%JDBC%' and status = 'ACTIVE' grou                            p by machine order by 1;
+select count(*) INACTIVE_JDBC_CONNECTIONS, substr(machine,1,30) machine from v\$session where program like '%JDBC%' and status = 'INACTIVE'                             group by machine order by 1;
+prompt
+prompt NOTIFICATION MAILER
+SELECT substr(component_name,1,30) component, substr(component_status,1,15) status FROM apps.fnd_svc_components WHERE component_type = 'WF_M                            AILER';
+select CPB.PARAMETER_NAME, substr(CPV.PARAMETER_VALUE,1,50) PARAMETER_VALUE from apps.FND_SVC_COMP_PARAM_VALS CPV, apps.FND_SVC_COMP_PARAMS_                            B CPB
+WHERE CPB.PARAMETER_NAME = 'HTMLAGENT'
+AND CPV.PARAMETER_ID = CPB.PARAMETER_ID;
+select decode (mail_status
+, NULL,'READY TO BE PURGED'
+, 'MAIL','READY TO BE SENT'
+, 'SENT','SENT MESSAGES'
+, 'ERROR','ERRORED MESSAGES'
+, 'FAILED','FAILED MESSAGES') MAIL_STATUS
+, count(*) NUMBER_MESSAGES
+from apps.wf_notifications
+group by mail_status;
+SELECT count(*) "Pending Emails"
+FROM APPLSYS.AQ\$WF_NOTIFICATION_OUT WNO
+WHERE
+WNO.MSG_STATE = 'READY'
+AND WNO.ENQ_TIME > TRUNC(SYSDATE-1)
+AND WNO.CORR_ID != 'APPS:ALR%'
+ORDER BY ENQ_TIME DESC;
+prompt
+prompt PROFILES
+col Level format a14
+select substr(user_profile_option_name,1,35) PROFILE_NAME,
+decode(level_id,10001,'Site',
+10002,'Application',
+10003,'Responsibility',
+10004,'User',
+10005,'Server',
+10006,'Organization',
+10007, 'ServResp',
+level_id) "Level",
+substr (profile_option_value,1,60) PROFILE_VALUE
+from
+apps.fnd_profile_option_values,
+apps.fnd_profile_options_vl
+where user_profile_option_name in ('ICX: Language','Applications SSO Login Types','Applications SSO Type','Application Authenticate Agent')
+and level_id = 10001
+AND fnd_profile_option_values.profile_option_id = fnd_profile_options_vl.profile_option_id;
+prompt
+prompt PURGES
+col argument4 format a10
+col argument9  format a20
+col CONCURRENT_PROGRAM_NAME format a50
+select request_id, DECODE (r.PHASE_CODE,'C','COMPLETED','I','INACTIVE','P','PENDING','R','RUNNING',r.PHASE_CODE) AS "PHASE",
+DECODE(r.STATUS_CODE,'A','WAITING','B','RESUMING','C','NORMAL','D','CANCELLED','E','ERRORED','F','SCHEDULED','G','WARNING','H','ONHOLD','I',                            'NORMAL','M','NO MANAGER','Q','STANDBY','R','NORMAL','S','SUSPENDED','T','TERMINATING','U','DISABLED','W','PAUSED','X','TERMINATED','Z','WAI                            TING',r.STATUS_CODE) AS "STATUS",
+substr(p.user_concurrent_program_name,1,60) concurrent_program_name, to_char(r.actual_completion_date,'DD/MM/YYYY HH24:MI:SS') COMPLETION_DA                            TE,
+TRUNC((NVL(r.ACTUAL_COMPLETION_DATE,SYSDATE)-r.ACTUAL_START_DATE)*1440,2) MINS_EXECUTION, substr(argument4,1,10) PARAMETERS
+from apps.fnd_concurrent_requests r, apps.fnd_concurrent_programs_tl p
+where r.concurrent_program_id = p.concurrent_program_id
+and p.language = 'US'
+and r.concurrent_program_id in (32263,43871,43588,44421,50698,38089,44408,32592,46781,43593,46798,46796,46797)
+and r.actual_start_date > trunc(sysdate);
+prompt
+prompt Statistics
+select request_id, DECODE (r.PHASE_CODE,'C','COMPLETED','I','INACTIVE','P','PENDING','R','RUNNING',r.PHASE_CODE) AS "PHASE",
+DECODE(r.STATUS_CODE,'A','WAITING','B','RESUMING','C','NORMAL','D','CANCELLED','E','ERRORED','F','SCHEDULED','G','WARNING','H','ONHOLD','I',                            'NORMAL','M','NO MANAGER','Q','STANDBY','R','NORMAL','S','SUSPENDED','T','TERMINATING','U','DISABLED','W','PAUSED','X','TERMINATED','Z','WAI                            TING',r.STATUS_CODE) AS "STATUS",
+substr(p.user_concurrent_program_name,1,60) concurrent_program_name, to_char(r.requested_start_date,'DD/MM/YYYY HH24:MI:SS') REQUESTED_DATE,                             to_char(r.actual_completion_date,'DD/MM/YYYY HH24:MI:SS') COMPLETION_DATE,
+TRUNC((NVL(r.ACTUAL_COMPLETION_DATE,SYSDATE)-r.ACTUAL_START_DATE)*1440,2) MINS_EXECUTION, substr(argument_text,1,22) PARAMETERS
+from apps.fnd_concurrent_requests r, apps.fnd_concurrent_programs_tl p
+where r.concurrent_program_id = p.concurrent_program_id
+and p.language = 'US'
+and r.concurrent_program_id in (60590,38121)
+order by 2;
+prompt
+prompt WF_BPEL_QTAB
+select substr(a.user_data.event_name,1,50) event,count(a.user_data.event_name) as count
+    FROM   apps.wf_bpel_qtab a
+    group by a.user_data.event_name;
+prompt
+prompt XRT
+select substr(a.user_data.event_name,1,50) event,count(a.user_data.event_name) as count
+    FROM   apps.XRTARREALCUST_BPEL_QTAB a
+   group by a.user_data.event_name;
+quit
+EOF
